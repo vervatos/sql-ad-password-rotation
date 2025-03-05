@@ -1,0 +1,77 @@
+# Configuration
+$sqlServers = @("SQLSERVER1", "SQLSERVER2")  # Replace with your SQL Server names
+$sqlLogins = @("sqluser1", "sqluser2")       # Replace with your SQL logins
+$adServiceAccounts = @("svcAccount1", "svcAccount2")  # Replace with your AD service accounts
+$logFile = "C:\Secure\PasswordChangeLog.txt"
+$emailTo = "adam.rinehart@live.com"
+$emailFrom = "admin@yourdomain.com"
+$smtpServer = "smtp.yourdomain.com"  # Replace with your SMTP server
+
+# Function to generate a strong random password
+function Generate-RandomPassword {
+    param([int]$length = 16)
+    Add-Type -AssemblyName System.Web
+    return [System.Web.Security.Membership]::GeneratePassword($length, 4)
+}
+
+# Log function
+function Write-Log {
+    param([string]$message)
+    $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+    $entry = "$timestamp - $message"
+    Add-Content -Path $logFile -Value $entry
+}
+
+# Change SQL Server login passwords
+$sqlResults = @()
+foreach ($server in $sqlServers) {
+    foreach ($login in $sqlLogins) {
+        try {
+            $newPassword = Generate-RandomPassword
+            $sqlQuery = "ALTER LOGIN [$login] WITH PASSWORD = '$newPassword';"
+            
+            # Execute the password change
+            Invoke-Sqlcmd -ServerInstance $server -Query $sqlQuery -ErrorAction Stop
+
+            # Log success
+            $message = "SQL Login [$login] on [$server] password changed successfully."
+            Write-Log $message
+            $sqlResults += $message
+        } catch {
+            $errorMsg = "ERROR changing password for SQL Login [$login] on [$server]: $_"
+            Write-Log $errorMsg
+            $sqlResults += $errorMsg
+        }
+    }
+}
+
+# Change AD service account passwords
+$adResults = @()
+foreach ($account in $adServiceAccounts) {
+    try {
+        $newPassword = ConvertTo-SecureString (Generate-RandomPassword) -AsPlainText -Force
+        
+        # Change the AD account password
+        Set-ADAccountPassword -Identity $account -NewPassword $newPassword -Reset -PassThru
+
+        # Log success
+        $message = "AD Service Account [$account] password changed successfully."
+        Write-Log $message
+        $adResults += $message
+    } catch {
+        $errorMsg = "ERROR changing password for AD Account [$account]: $_"
+        Write-Log $errorMsg
+        $adResults += $errorMsg
+    }
+}
+
+# Ensure log file is secured
+icacls $logFile /inheritance:r /grant Administrators:F
+
+# Send Email Notification
+$emailBody = "Password Change Summary:`n`n"
+$emailBody += "SQL Server Logins:`n" + ($sqlResults -join "`n") + "`n`n"
+$emailBody += "Active Directory Accounts:`n" + ($adResults -join "`n") + "`n`n"
+$emailBody += "See full logs at: $logFile"
+
+Send-MailMessage -To $emailTo -From $emailFrom -Subject "Monthly Password Change Report" -Body $emailBody -SmtpServer $smtpServer
